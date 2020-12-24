@@ -15,7 +15,7 @@ use crate::{
         ConsoleOutput, IdKind, Packet, ResponseWriter, ThreadId,
     },
     target::ext::base::multithread::{Actions, ResumeAction, ThreadStopReason, TidSelector},
-    target::ext::base::BaseOps,
+    target::ext::base::{BaseOps, GdbInterrupt},
     target::Target,
     util::managed_vec::ManagedVec,
     FAKE_PID, SINGLE_THREAD_TID,
@@ -923,34 +923,84 @@ impl<T: Target, C: Connection> GdbStubImpl<T, C> {
         target: &mut T,
         actions: &mut dyn Iterator<Item = (TidSelector, ResumeAction)>,
     ) -> Result<Option<DisconnectReason>, Error<T::Error, C::Error>> {
-        let mut err = Ok(());
+        #[pin_project::pin_project]
+        struct GdbInterruptAdapter<'a, C: Connection> {
+            ready_but_no_interrupt: bool,
+            conn: &'a mut C,
+            err: Option<C::Error>,
+        }
 
-        let mut check_gdb_interrupt = || match res.as_conn().peek() {
-            Ok(Some(0x03)) => true, // 0x03 is the interrupt byte
-            Ok(Some(_)) => false,   // it's nothing that can't wait...
-            Ok(None) => false,
-            Err(e) => {
-                err = Err(Error::ConnectionRead(e));
-                true // break ASAP if a connection error occurred
+        use core::future::Future;
+        use core::pin::Pin;
+        use core::task::{Context, Poll};
+
+        impl<'a, C: Connection> Future for GdbInterruptAdapter<'a, C> {
+            type Output = ();
+
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                if self.ready_but_no_interrupt {
+                    return Poll::Pending;
+                }
+
+                let this = self.project();
+                match this.conn.poll_readable(cx) {
+                    Poll::Ready(Ok(())) => Poll::Ready(()),
+                    Poll::Ready(Err(e)) => {
+                        // instead of pushing the burden of handing connection errors into the
+                        // resume() code, the error is stashed away until resume() yields execution.
+                        *this.err = Some(e);
+                        Poll::Ready(())
+                    }
+                    Poll::Pending => Poll::Pending,
+                }
             }
+        }
+
+        let mut adapter = GdbInterruptAdapter {
+            ready_but_no_interrupt: false,
+            conn: res.as_conn(),
+            err: None,
         };
 
-        let stop_reason = match target.base_ops() {
-            BaseOps::SingleThread(ops) => ops
-                .resume(
-                    // TODO?: add a more descriptive error if vcont has multiple threads in
-                    // single-threaded mode?
-                    actions.next().ok_or(Error::PacketUnexpected)?.1,
-                    &mut check_gdb_interrupt,
-                )
-                .map_err(Error::TargetError)?
-                .into(),
-            BaseOps::MultiThread(ops) => ops
-                .resume(Actions::new(actions), &mut check_gdb_interrupt)
-                .map_err(Error::TargetError)?,
-        };
+        let stop_reason = loop {
+            let gdb_interrupt_future = &mut adapter;
+            pin_utils::pin_mut!(gdb_interrupt_future);
 
-        err?;
+            let stop_reason = match target.base_ops() {
+                BaseOps::SingleThread(ops) => ops
+                    .resume(
+                        // TODO?: add a more descriptive error if vcont has multiple threads in
+                        // single-threaded mode?
+                        actions.next().ok_or(Error::PacketUnexpected)?.1,
+                        GdbInterrupt::new(gdb_interrupt_future),
+                    )
+                    .map(Into::into),
+                BaseOps::MultiThread(ops) => ops.resume(
+                    Actions::new(actions),
+                    GdbInterrupt::new(gdb_interrupt_future),
+                ),
+            }
+            .map_err(Error::TargetError)?;
+
+            if matches!(stop_reason, ThreadStopReason::GdbInterrupt) {
+                if let Some(e) = adapter.err {
+                    return Err(Error::ConnectionRead(e));
+                }
+
+                match adapter.conn.peek() {
+                    // 0x03 is the interrupt byte
+                    Ok(0x03) => {}
+                    // anything else can wait.
+                    Ok(_) => {
+                        adapter.ready_but_no_interrupt = true;
+                        continue;
+                    }
+                    Err(e) => return Err(Error::ConnectionRead(e)),
+                }
+            }
+
+            break stop_reason;
+        };
 
         self.finish_vcont(stop_reason, res)
     }

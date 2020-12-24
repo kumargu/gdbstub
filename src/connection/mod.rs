@@ -1,3 +1,5 @@
+use core::task::{Context, Poll};
+
 mod impls;
 
 /// A trait to perform in-order, serial, byte-wise I/O.
@@ -41,9 +43,8 @@ pub trait Connection {
         Ok(())
     }
 
-    /// Peek a single byte. This MUST be a **non-blocking** operation, returning
-    /// `None` if no byte is available.
-    fn peek(&mut self) -> Result<Option<u8>, Self::Error>;
+    /// Peek a single byte.
+    fn peek(&mut self) -> Result<u8, Self::Error>;
 
     /// Flush this Connection, ensuring that all intermediately buffered
     /// contents reach their destination.
@@ -68,4 +69,30 @@ pub trait Connection {
     fn on_session_start(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
+
+    /// Polls the connection for readability.
+    ///
+    /// Used as part of the
+    /// [`GdbInterrupt`](crate::target::ext::base::GdbInterrupt) future.
+    ///
+    /// When possible, the implementation should simply forward to
+    /// an existing `poll_readable`-like method on the underlying connection.
+    /// For example, `tokio::net::TcpStream` includes a [`poll_read_ready`](https://docs.rs/tokio/0.3.5/tokio/net/struct.TcpStream.html#method.poll_read_ready)
+    /// method.
+    ///
+    /// If the underlying connection doesn't expose an async interface, a
+    /// "busy-polling" implementation can be used instead:
+    ///
+    /// ```rust,ignore
+    /// fn poll_readable(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    ///     cx.waker().wake_by_ref();
+    ///     // check if readable, and return Poll::Ready(()) or Poll::Pending...
+    /// }
+    /// ```
+    ///
+    /// _Warning:_ accidentally passing a busy-polling `GdbInterrupt` future to
+    /// an async executor will typically result in very high CPU usage! Instead,
+    /// the future should be  _manually_ polled at certain intervals (e.g: after
+    /// X clock cycles).
+    fn poll_readable(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>>;
 }

@@ -19,6 +19,8 @@ log = "0.4"
 managed = { version = "0.8", default-features = false }
 num-traits = { version = "0.2", default-features = false }
 paste = "1.0"
+pin-project = "1"
+pin-utils = "0.1"
 
 [dev-dependencies]
 armv4t_emu = "0.1"

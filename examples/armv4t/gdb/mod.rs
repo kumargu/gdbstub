@@ -4,7 +4,9 @@ use armv4t_emu::{reg, Memory};
 use gdbstub::arch;
 use gdbstub::arch::arm::reg::id::ArmCoreRegId;
 use gdbstub::target;
-use gdbstub::target::ext::base::singlethread::{ResumeAction, SingleThreadOps, StopReason};
+use gdbstub::target::ext::base::singlethread::{
+    GdbInterrupt, ResumeAction, SingleThreadOps, StopReason,
+};
 use gdbstub::target::ext::breakpoints::WatchKind;
 use gdbstub::target::{Target, TargetError, TargetResult};
 
@@ -61,8 +63,10 @@ impl SingleThreadOps for Emu {
     fn resume(
         &mut self,
         action: ResumeAction,
-        check_gdb_interrupt: &mut dyn FnMut() -> bool,
+        gdb_interrupt: GdbInterrupt,
     ) -> Result<StopReason<u32>, Self::Error> {
+        let mut gdb_interrupt = gdb_interrupt.no_async();
+
         let event = match action {
             ResumeAction::Step => match self.step() {
                 Some(e) => e,
@@ -77,7 +81,7 @@ impl SingleThreadOps for Emu {
 
                     // check for GDB interrupt every 1024 instructions
                     cycles += 1;
-                    if cycles % 1024 == 0 && check_gdb_interrupt() {
+                    if cycles % 1024 == 0 && gdb_interrupt.pending() {
                         return Ok(StopReason::GdbInterrupt);
                     }
                 }

@@ -1,3 +1,4 @@
+use core::task::{Context, Poll};
 use std::net::TcpStream;
 
 use crate::Connection;
@@ -7,8 +8,6 @@ impl Connection for TcpStream {
 
     fn read(&mut self) -> Result<u8, Self::Error> {
         use std::io::Read;
-
-        self.set_nonblocking(false)?;
 
         let mut buf = [0u8];
         match Read::read_exact(self, &mut buf) {
@@ -20,18 +19,13 @@ impl Connection for TcpStream {
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Self::Error> {
         use std::io::Read;
 
-        self.set_nonblocking(false)?;
-
         Read::read_exact(self, buf)
     }
 
-    fn peek(&mut self) -> Result<Option<u8>, Self::Error> {
-        self.set_nonblocking(true)?;
-
+    fn peek(&mut self) -> Result<u8, Self::Error> {
         let mut buf = [0u8];
-        match Self::peek(self, &mut buf) {
-            Ok(_) => Ok(Some(buf[0])),
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+        match TcpStream::peek(self, &mut buf) {
+            Ok(_) => Ok(buf[0]),
             Err(e) => Err(e),
         }
     }
@@ -55,7 +49,27 @@ impl Connection for TcpStream {
     }
 
     fn on_session_start(&mut self) -> Result<(), Self::Error> {
+        self.set_nonblocking(false)?;
         // see issue #28
-        self.set_nodelay(true)
+        self.set_nodelay(true)?;
+        Ok(())
+    }
+
+    fn poll_readable(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.set_nonblocking(true)?;
+
+        // busy-wait polling
+        cx.waker().wake_by_ref();
+
+        let mut buf = [0u8];
+        let res = match TcpStream::peek(self, &mut buf) {
+            Ok(_) => Poll::Ready(Ok(())),
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Poll::Pending,
+            Err(e) => Poll::Ready(Err(e)),
+        };
+
+        self.set_nonblocking(false)?;
+
+        res
     }
 }

@@ -5,7 +5,7 @@ use crate::target::ext::breakpoints::WatchKind;
 use crate::target::{Target, TargetResult};
 
 // Convenient re-export
-pub use super::ResumeAction;
+pub use super::{GdbInterrupt, ResumeAction};
 
 /// Base debugging operations for single threaded targets.
 #[allow(clippy::type_complexity)]
@@ -42,7 +42,7 @@ pub trait SingleThreadOps: Target {
     fn resume(
         &mut self,
         action: ResumeAction,
-        check_gdb_interrupt: &mut dyn FnMut() -> bool,
+        check_gdb_interrupt: GdbInterrupt<'_>,
     ) -> Result<StopReason<<Self::Arch as Arch>::Usize>, Self::Error>;
 
     /// Read the target's registers.

@@ -1,6 +1,8 @@
-use crate::Connection;
+use core::task::{Context, Poll};
 
 use alloc::boxed::Box;
+
+use crate::Connection;
 
 impl<E> Connection for Box<dyn Connection<Error = E>> {
     type Error = E;
@@ -21,7 +23,7 @@ impl<E> Connection for Box<dyn Connection<Error = E>> {
         (**self).write_all(buf)
     }
 
-    fn peek(&mut self) -> Result<Option<u8>, Self::Error> {
+    fn peek(&mut self) -> Result<u8, Self::Error> {
         (**self).peek()
     }
 
@@ -31,5 +33,9 @@ impl<E> Connection for Box<dyn Connection<Error = E>> {
 
     fn on_session_start(&mut self) -> Result<(), Self::Error> {
         (**self).on_session_start()
+    }
+
+    fn poll_readable(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        (**self).poll_readable(cx)
     }
 }

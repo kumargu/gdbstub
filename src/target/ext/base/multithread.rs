@@ -6,7 +6,7 @@ use crate::target::ext::breakpoints::WatchKind;
 use crate::target::{Target, TargetResult};
 
 // Convenient re-exports
-pub use super::ResumeAction;
+pub use super::{GdbInterrupt, ResumeAction};
 
 /// Selects a thread corresponding to a ResumeAction.
 // NOTE: this is a subset of the internal `IdKind` type, albeit without an `Any` variant. Selecting
@@ -78,7 +78,7 @@ pub trait MultiThreadOps: Target {
     fn resume(
         &mut self,
         actions: Actions<'_>,
-        check_gdb_interrupt: &mut dyn FnMut() -> bool,
+        check_gdb_interrupt: GdbInterrupt<'_>,
     ) -> Result<ThreadStopReason<<Self::Arch as Arch>::Usize>, Self::Error>;
 
     /// Read the target's registers.

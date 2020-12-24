@@ -1,4 +1,5 @@
 use core::ffi::c_void;
+use core::task::{Context, Poll};
 use std::io;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
@@ -52,8 +53,6 @@ impl Connection for UnixStream {
     fn read(&mut self) -> Result<u8, Self::Error> {
         use std::io::Read;
 
-        self.set_nonblocking(false)?;
-
         let mut buf = [0u8];
         match Read::read_exact(self, &mut buf) {
             Ok(_) => Ok(buf[0]),
@@ -64,18 +63,13 @@ impl Connection for UnixStream {
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Self::Error> {
         use std::io::Read;
 
-        self.set_nonblocking(false)?;
-
         Read::read_exact(self, buf)
     }
 
-    fn peek(&mut self) -> Result<Option<u8>, Self::Error> {
-        self.set_nonblocking(true)?;
-
+    fn peek(&mut self) -> Result<u8, Self::Error> {
         let mut buf = [0u8];
         match PeekExt::peek(self, &mut buf) {
-            Ok(_) => Ok(Some(buf[0])),
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Ok(_) => Ok(buf[0]),
             Err(e) => Err(e),
         }
     }
@@ -96,5 +90,28 @@ impl Connection for UnixStream {
         use std::io::Write;
 
         Write::flush(self)
+    }
+
+    fn on_session_start(&mut self) -> Result<(), Self::Error> {
+        self.set_nonblocking(false)?;
+        Ok(())
+    }
+
+    fn poll_readable(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.set_nonblocking(true)?;
+
+        // busy-wait polling
+        cx.waker().wake_by_ref();
+
+        let mut buf = [0u8];
+        let res = match PeekExt::peek(self, &mut buf) {
+            Ok(_) => Poll::Ready(Ok(())),
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Poll::Pending,
+            Err(e) => Poll::Ready(Err(e)),
+        };
+
+        self.set_nonblocking(false)?;
+
+        res
     }
 }
