@@ -65,7 +65,7 @@ impl SingleThreadOps for Emu {
         action: ResumeAction,
         gdb_interrupt: GdbInterrupt,
     ) -> Result<StopReason<u32>, Self::Error> {
-        let mut gdb_interrupt = gdb_interrupt.no_async();
+        let mut gdb_interrupt = gdb_interrupt.manual_poll();
 
         let event = match action {
             ResumeAction::Step => match self.step() {

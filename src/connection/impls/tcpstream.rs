@@ -1,5 +1,8 @@
 use core::task::{Context, Poll};
+
 use std::net::TcpStream;
+#[cfg(all(feature = "std", target_family = "unix"))]
+use std::os::unix::io::{AsRawFd, RawFd};
 
 use crate::Connection;
 
@@ -55,11 +58,8 @@ impl Connection for TcpStream {
         Ok(())
     }
 
-    fn poll_readable(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_readable(&self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.set_nonblocking(true)?;
-
-        // busy-wait polling
-        cx.waker().wake_by_ref();
 
         let mut buf = [0u8];
         let res = match TcpStream::peek(self, &mut buf) {
@@ -71,5 +71,10 @@ impl Connection for TcpStream {
         self.set_nonblocking(false)?;
 
         res
+    }
+
+    #[cfg(all(feature = "std", target_family = "unix"))]
+    fn as_raw_fd(&self) -> Option<RawFd> {
+        Some(AsRawFd::as_raw_fd(self))
     }
 }

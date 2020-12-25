@@ -956,6 +956,9 @@ impl<T: Target, C: Connection> GdbStubImpl<T, C> {
             }
         }
 
+        #[cfg(all(feature = "std", target_family = "unix"))]
+        let fd = res.as_conn().as_raw_fd();
+
         let mut adapter = GdbInterruptAdapter {
             ready_but_no_interrupt: false,
             conn: res.as_conn(),
@@ -966,19 +969,22 @@ impl<T: Target, C: Connection> GdbStubImpl<T, C> {
             let gdb_interrupt_future = &mut adapter;
             pin_utils::pin_mut!(gdb_interrupt_future);
 
+            #[allow(unused_mut)]
+            let mut gdb_interrupt = GdbInterrupt::new(gdb_interrupt_future);
+
+            #[cfg(all(feature = "std", target_family = "unix"))]
+            gdb_interrupt.set_fd(fd);
+
             let stop_reason = match target.base_ops() {
                 BaseOps::SingleThread(ops) => ops
                     .resume(
                         // TODO?: add a more descriptive error if vcont has multiple threads in
                         // single-threaded mode?
                         actions.next().ok_or(Error::PacketUnexpected)?.1,
-                        GdbInterrupt::new(gdb_interrupt_future),
+                        gdb_interrupt,
                     )
                     .map(Into::into),
-                BaseOps::MultiThread(ops) => ops.resume(
-                    Actions::new(actions),
-                    GdbInterrupt::new(gdb_interrupt_future),
-                ),
+                BaseOps::MultiThread(ops) => ops.resume(Actions::new(actions), gdb_interrupt),
             }
             .map_err(Error::TargetError)?;
 

@@ -72,27 +72,26 @@ pub trait Connection {
 
     /// Polls the connection for readability.
     ///
-    /// Used as part of the
-    /// [`GdbInterrupt`](crate::target::ext::base::GdbInterrupt) future.
+    /// This method is primarily used as part of the
+    /// [`GdbInterrupt`](crate::target::ext::base::GdbInterrupt) type.
     ///
-    /// When possible, the implementation should simply forward to
-    /// an existing `poll_readable`-like method on the underlying connection.
-    /// For example, `tokio::net::TcpStream` includes a [`poll_read_ready`](https://docs.rs/tokio/0.3.5/tokio/net/struct.TcpStream.html#method.poll_read_ready)
+    /// When possible, a `Connection::poll_readable` implementation should
+    /// forward to an existing `poll_readable`-like method on the underlying
+    /// connection. For example, `tokio::net::TcpStream` includes a
+    /// [`poll_read_ready`](https://docs.rs/tokio/0.3.5/tokio/net/struct.TcpStream.html#method.poll_read_ready)
     /// method.
     ///
-    /// If the underlying connection doesn't expose an async interface, a
-    /// "busy-polling" implementation can be used instead:
-    ///
-    /// ```rust,ignore
-    /// fn poll_readable(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-    ///     cx.waker().wake_by_ref();
-    ///     // check if readable, and return Poll::Ready(()) or Poll::Pending...
-    /// }
-    /// ```
-    ///
-    /// _Warning:_ accidentally passing a busy-polling `GdbInterrupt` future to
-    /// an async executor will typically result in very high CPU usage! Instead,
-    /// the future should be  _manually_ polled at certain intervals (e.g: after
-    /// X clock cycles).
+    /// If the underlying connection doesn't expose an `poll_readable`-like
+    /// method, and there is no straightforward implementation that properly
+    /// wakes the `Waker` once the connection is readable, it is appropriate to
+    /// simply return `Poll::Pending`, and have the Taget use the
+    /// [`GdbInterruptManualPoll`](crate::target::ext::base::
+    /// GdbInterruptManualPoll) API.
     fn poll_readable(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>>;
+
+    /// Extracts the connection's underlying raw file descriptor, if available.
+    #[cfg(all(feature = "std", target_family = "unix"))]
+    fn as_raw_fd(&self) -> Option<std::os::unix::io::RawFd> {
+        None
+    }
 }

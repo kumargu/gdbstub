@@ -1,7 +1,7 @@
 use core::ffi::c_void;
 use core::task::{Context, Poll};
 use std::io;
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 
 use crate::Connection;
@@ -37,7 +37,7 @@ impl PeekExt for UnixStream {
         // from std/sys/unix/net.rs
         let ret = cvt(unsafe {
             recv(
-                self.as_raw_fd(),
+                AsRawFd::as_raw_fd(self),
                 buf.as_mut_ptr() as *mut c_void,
                 buf.len(),
                 MSG_PEEK,
@@ -97,11 +97,8 @@ impl Connection for UnixStream {
         Ok(())
     }
 
-    fn poll_readable(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_readable(&self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.set_nonblocking(true)?;
-
-        // busy-wait polling
-        cx.waker().wake_by_ref();
 
         let mut buf = [0u8];
         let res = match PeekExt::peek(self, &mut buf) {
@@ -113,5 +110,9 @@ impl Connection for UnixStream {
         self.set_nonblocking(false)?;
 
         res
+    }
+
+    fn as_raw_fd(&self) -> Option<RawFd> {
+        Some(AsRawFd::as_raw_fd(self))
     }
 }

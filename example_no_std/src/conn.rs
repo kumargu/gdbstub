@@ -74,7 +74,7 @@ impl Connection for TcpConnection {
         }
     }
 
-    fn peek(&mut self) -> Result<Option<u8>, &'static str> {
+    fn peek(&mut self) -> Result<u8, &'static str> {
         let mut buf = [0];
         let ret = unsafe {
             libc::recv(
@@ -87,7 +87,7 @@ impl Connection for TcpConnection {
         if ret == -1 || ret != 1 {
             Err("socket peek failed")
         } else {
-            Ok(Some(buf[0]))
+            Ok(buf[0])
         }
     }
 
@@ -95,5 +95,13 @@ impl Connection for TcpConnection {
         // huh, apparently flushing isn't a "thing" for Tcp streams.
         // see https://doc.rust-lang.org/src/std/net/tcp.rs.html#592-609
         Ok(())
+    }
+
+    fn poll_readable(
+        &self,
+        _: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Result<(), &'static str>> {
+        // HACK: this needs a proper implementation
+        core::task::Poll::Pending
     }
 }

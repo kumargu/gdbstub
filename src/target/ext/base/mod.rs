@@ -4,6 +4,9 @@
 //! While not strictly required, it's recommended that single threaded targets
 //! implement the simplified `singlethread` API.
 
+#[cfg(all(feature = "std", target_family = "unix"))]
+use std::os::unix::io::RawFd;
+
 pub mod multithread;
 pub mod singlethread;
 
@@ -32,25 +35,65 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-/// A [`Future`] that resolves if the GDB client sent an interrupt (e.g: on
-/// Ctrl-C).
+/// A pollable handle which only resolves if a GDB client requests a interrupt
+/// (e.g: a user pressing Ctrl-C).
+///
+/// The `GdbInterrupt` type implements several async interfaces, making it
+/// easy to integrate no matter what async model the target supports:
+///
+/// # 1. `async/await`
+///
+/// [`GdbInterrupt`] implements Rust's standard [`Future`] interface, resolving
+/// to `()` if the GDB client sends an interrupt.
+///
+/// # 2. Manual Polling
+///
+/// The `GdbInterrupt::`
+///
+///
+/// # 3. (*nix only) `as_raw_fd` + `poll`
+///
+/// If the underlying `Connection` object is backed by a file descriptor, the
+/// `as_raw_fd()` method can be used to get a copy of the underling [`RawFd`].
+///
+/// This file descriptor can then be used alongside a
+/// [`poll`](https://man7.org/linux/man-pages/man2/poll.2.html)-like API to
+/// wait for GDB interrupts in conjunction with other events.
 pub struct GdbInterrupt<'a> {
+    #[cfg(all(feature = "std", target_family = "unix"))]
+    fd: Option<RawFd>,
+
     inner: Pin<&'a mut dyn Future<Output = ()>>,
 }
 
 impl<'a> GdbInterrupt<'a> {
     pub(crate) fn new(inner: Pin<&'a mut dyn Future<Output = ()>>) -> GdbInterrupt<'a> {
-        GdbInterrupt { inner }
+        GdbInterrupt {
+            #[cfg(all(feature = "std", target_family = "unix"))]
+            fd: None,
+            inner,
+        }
     }
 
-    /// Returns a [`GdbInterruptNoAsync`] struct which can be polled using a
+    /// Returns a [`GdbInterruptManualPoll`] struct which can be polled using a
     /// simple non-blocking [`pending(&mut self) ->
-    /// bool`](GdbInterruptNoAsync::pending) method.
-    pub fn no_async(self) -> GdbInterruptNoAsync<'a> {
-        GdbInterruptNoAsync {
+    /// bool`](GdbInterruptManualPoll::pending) method.
+    pub fn manual_poll(self) -> GdbInterruptManualPoll<'a> {
+        GdbInterruptManualPoll {
             ready: false,
             interrupt: self,
         }
+    }
+
+    #[cfg(all(feature = "std", target_family = "unix"))]
+    pub(crate) fn set_fd(&mut self, fd: Option<RawFd>) {
+        self.fd = fd;
+    }
+
+    /// Extracts the connection's underlying raw file descriptor, if available.
+    #[cfg(all(feature = "std", target_family = "unix"))]
+    pub fn as_raw_fd(&self) -> Option<RawFd> {
+        self.fd
     }
 }
 
@@ -63,12 +106,12 @@ impl<'a> Future for GdbInterrupt<'a> {
 
 /// A simplified interface to [`GdbInterrupt`] for projects without
 /// async/await infrastructure.
-pub struct GdbInterruptNoAsync<'a> {
+pub struct GdbInterruptManualPoll<'a> {
     ready: bool,
     interrupt: GdbInterrupt<'a>,
 }
 
-impl<'a> GdbInterruptNoAsync<'a> {
+impl<'a> GdbInterruptManualPoll<'a> {
     /// Checks if there is a pending GDB interrupt.
     pub fn pending(&mut self) -> bool {
         // polling a future after its returned `Ready` is forbidden.

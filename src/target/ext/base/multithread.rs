@@ -32,11 +32,14 @@ pub trait MultiThreadOps: Target {
     /// without a corresponding `TidSelector` should be left in the same state
     /// (if possible).
     ///
-    /// The `check_gdb_interrupt` callback can be invoked to check if GDB sent
-    /// an Interrupt packet (i.e: the user pressed Ctrl-C). It's recommended to
-    /// invoke this callback every-so-often while the system is running (e.g:
-    /// every X cycles/milliseconds). Periodically checking for incoming
-    /// interrupt packets is _not_ required, but it is _recommended_.
+    /// `gdb_interrupt` is a pollable handle which only resolves if a GDB client
+    /// requests a interrupt (e.g: a user pressing Ctrl-C). The [`GdbInterrupt`]
+    /// type implements several async interfaces, making it easy to integrate
+    /// no matter what async model the target supports. Please refer to the
+    /// type's documentation for more details.
+    ///
+    /// While targets are not required to handle GDB client interrupts, doing so
+    /// is highly recommended.
     ///
     /// # Implementation requirements
     ///
@@ -78,7 +81,7 @@ pub trait MultiThreadOps: Target {
     fn resume(
         &mut self,
         actions: Actions<'_>,
-        check_gdb_interrupt: GdbInterrupt<'_>,
+        gdb_interrupt: GdbInterrupt<'_>,
     ) -> Result<ThreadStopReason<<Self::Arch as Arch>::Usize>, Self::Error>;
 
     /// Read the target's registers.
