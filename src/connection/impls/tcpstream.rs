@@ -1,10 +1,11 @@
-use core::task::{Context, Poll};
-
 use std::net::TcpStream;
 #[cfg(all(feature = "std", target_family = "unix"))]
 use std::os::unix::io::{AsRawFd, RawFd};
 
-use crate::Connection;
+use crate::{
+    connection::{ConnectionNonBlocking, PollReadable},
+    Connection,
+};
 
 impl Connection for TcpStream {
     type Error = std::io::Error;
@@ -58,23 +59,29 @@ impl Connection for TcpStream {
         Ok(())
     }
 
-    fn poll_readable(&self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.set_nonblocking(true)?;
-
-        let mut buf = [0u8];
-        let res = match TcpStream::peek(self, &mut buf) {
-            Ok(_) => Poll::Ready(Ok(())),
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Poll::Pending,
-            Err(e) => Poll::Ready(Err(e)),
-        };
-
-        self.set_nonblocking(false)?;
-
-        res
+    fn async_interface(&mut self) -> PollReadable<'_, Self::Error> {
+        PollReadable::NonBlocking(self)
     }
 
     #[cfg(all(feature = "std", target_family = "unix"))]
     fn as_raw_fd(&self) -> Option<RawFd> {
         Some(AsRawFd::as_raw_fd(self))
+    }
+}
+
+impl ConnectionNonBlocking for TcpStream {
+    fn is_readable(&self) -> Result<bool, Self::Error> {
+        self.set_nonblocking(true)?;
+
+        let mut buf = [0u8];
+        let res = match TcpStream::peek(self, &mut buf) {
+            Ok(_) => Ok(true),
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
+            Err(e) => Err(e),
+        };
+
+        self.set_nonblocking(false)?;
+
+        res
     }
 }

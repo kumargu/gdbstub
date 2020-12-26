@@ -41,15 +41,19 @@ use core::task::{Context, Poll};
 /// The `GdbInterrupt` type implements several async interfaces, making it
 /// easy to integrate no matter what async model the target supports:
 ///
-/// # 1. `async/await`
+/// # 1. Manual Polling
+///
+/// # 2. `async/await`
 ///
 /// [`GdbInterrupt`] implements Rust's standard [`Future`] interface, resolving
-/// to `()` if the GDB client sends an interrupt.
+/// to `()` if the GDB client sends an interrupt. This future is directly
+/// derived from the
+/// [`Connection::poll_readable`](crate::Connection::poll_readable) method.
 ///
-/// # 2. Manual Polling
-///
-/// The `GdbInterrupt::`
-///
+/// **NOTE:** While `gdbstub` does include built-in implementations of
+/// [`Connection`](crate::Connection) for standard library types such as
+/// `TcpStream` and `UnixStream`, these implementations do _not_ hook into any
+/// futures executor
 ///
 /// # 3. (*nix only) `as_raw_fd` + `poll`
 ///
@@ -62,26 +66,48 @@ use core::task::{Context, Poll};
 pub struct GdbInterrupt<'a> {
     #[cfg(all(feature = "std", target_family = "unix"))]
     fd: Option<RawFd>,
+    inner: GdbInterruptInner<'a>,
+}
 
-    inner: Pin<&'a mut dyn Future<Output = ()>>,
+enum GdbInterruptInner<'a> {
+    Poll(&'a mut dyn FnMut() -> bool),
+    Future(Pin<&'a mut dyn Future<Output = ()>>),
 }
 
 impl<'a> GdbInterrupt<'a> {
-    pub(crate) fn new(inner: Pin<&'a mut dyn Future<Output = ()>>) -> GdbInterrupt<'a> {
+    pub(crate) fn new_pollable(fun: &'a mut dyn FnMut() -> bool) -> GdbInterrupt<'a> {
         GdbInterrupt {
             #[cfg(all(feature = "std", target_family = "unix"))]
             fd: None,
-            inner,
+            inner: GdbInterruptInner::Poll(fun),
+        }
+    }
+
+    pub(crate) fn new_future(fut: Pin<&'a mut dyn Future<Output = ()>>) -> GdbInterrupt<'a> {
+        GdbInterrupt {
+            #[cfg(all(feature = "std", target_family = "unix"))]
+            fd: None,
+            inner: GdbInterruptInner::Future(fut),
         }
     }
 
     /// Returns a [`GdbInterruptManualPoll`] struct which can be polled using a
-    /// simple non-blocking [`pending(&mut self) ->
-    /// bool`](GdbInterruptManualPoll::pending) method.
+    /// simple non-blocking
+    /// [`pending(&mut self) -> bool`](GdbInterruptManualPoll::pending) method.
     pub fn manual_poll(self) -> GdbInterruptManualPoll<'a> {
         GdbInterruptManualPoll {
             ready: false,
             interrupt: self,
+        }
+    }
+
+    /// If the underlying [`Connection`](crate::Connection) implements an async
+    /// interface, return a [`Future<Output = ()>`] which resolves if a GDB
+    /// client requests an interrupt.
+    pub fn into_future(self) -> Option<Pin<&'a mut dyn Future<Output = ()>>> {
+        match self.inner {
+            GdbInterruptInner::Poll(_) => None,
+            GdbInterruptInner::Future(fut) => Some(fut),
         }
     }
 
@@ -97,15 +123,7 @@ impl<'a> GdbInterrupt<'a> {
     }
 }
 
-impl<'a> Future for GdbInterrupt<'a> {
-    type Output = ();
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        self.inner.as_mut().poll(cx)
-    }
-}
-
-/// A simplified interface to [`GdbInterrupt`] for projects without
-/// async/await infrastructure.
+/// Manually poll for a pending GDB interrupt.
 pub struct GdbInterruptManualPoll<'a> {
     ready: bool,
     interrupt: GdbInterrupt<'a>,
@@ -119,14 +137,14 @@ impl<'a> GdbInterruptManualPoll<'a> {
             return true;
         }
 
-        match self
-            .interrupt
-            .inner
-            .as_mut()
-            .poll(&mut Context::from_waker(&dummy_waker()))
-        {
-            Poll::Ready(_) => self.ready = true,
-            Poll::Pending => self.ready = false,
+        match &mut self.interrupt.inner {
+            GdbInterruptInner::Poll(fun) => self.ready = fun(),
+            GdbInterruptInner::Future(fut) => {
+                match fut.as_mut().poll(&mut Context::from_waker(&dummy_waker())) {
+                    Poll::Ready(_) => self.ready = true,
+                    Poll::Pending => self.ready = false,
+                }
+            }
         }
 
         self.ready
@@ -135,16 +153,15 @@ impl<'a> GdbInterruptManualPoll<'a> {
 
 use core::task::{RawWaker, RawWakerVTable, Waker};
 
-fn dummy_raw_waker() -> RawWaker {
-    fn no_op(_: *const ()) {}
-    fn clone(_: *const ()) -> RawWaker {
-        dummy_raw_waker()
+fn dummy_waker() -> Waker {
+    fn dummy_raw_waker() -> RawWaker {
+        fn no_op(_: *const ()) {}
+        fn clone(_: *const ()) -> RawWaker {
+            dummy_raw_waker()
+        }
+        let vtable = &RawWakerVTable::new(clone, no_op, no_op, no_op);
+        RawWaker::new(core::ptr::null(), vtable)
     }
 
-    let vtable = &RawWakerVTable::new(clone, no_op, no_op, no_op);
-    RawWaker::new(core::ptr::null(), vtable)
-}
-
-fn dummy_waker() -> Waker {
     unsafe { Waker::from_raw(dummy_raw_waker()) }
 }

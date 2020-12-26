@@ -124,7 +124,7 @@
 //! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
-#![deny(missing_docs)]
+// #![deny(missing_docs)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -132,7 +132,6 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-mod connection;
 mod gdbstub_impl;
 mod protocol;
 mod util;
@@ -142,6 +141,7 @@ pub mod internal;
 
 pub mod arch;
 pub mod common;
+pub mod connection;
 pub mod target;
 
 pub use connection::Connection;

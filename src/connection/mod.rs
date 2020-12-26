@@ -87,11 +87,24 @@ pub trait Connection {
     /// simply return `Poll::Pending`, and have the Taget use the
     /// [`GdbInterruptManualPoll`](crate::target::ext::base::
     /// GdbInterruptManualPoll) API.
-    fn poll_readable(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>>;
+    fn async_interface(&mut self) -> PollReadable<'_, Self::Error>;
 
     /// Extracts the connection's underlying raw file descriptor, if available.
     #[cfg(all(feature = "std", target_family = "unix"))]
     fn as_raw_fd(&self) -> Option<std::os::unix::io::RawFd> {
         None
     }
+}
+
+pub trait ConnectionAsync: Connection {
+    fn poll_readable(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>>;
+}
+
+pub trait ConnectionNonBlocking: Connection {
+    fn is_readable(&self) -> Result<bool, Self::Error>;
+}
+
+pub enum PollReadable<'a, E> {
+    NonBlocking(&'a mut dyn ConnectionNonBlocking<Error = E>),
+    Async(&'a mut dyn ConnectionAsync<Error = E>),
 }

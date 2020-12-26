@@ -1,8 +1,6 @@
-use core::task::{Context, Poll};
-
 use alloc::boxed::Box;
 
-use crate::Connection;
+use crate::{connection::PollReadable, Connection};
 
 impl<E> Connection for Box<dyn Connection<Error = E>> {
     type Error = E;
@@ -35,7 +33,7 @@ impl<E> Connection for Box<dyn Connection<Error = E>> {
         (**self).on_session_start()
     }
 
-    fn poll_readable(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        (**self).poll_readable(cx)
+    fn async_interface(&mut self) -> PollReadable<'_, Self::Error> {
+        (**self).async_interface()
     }
 }

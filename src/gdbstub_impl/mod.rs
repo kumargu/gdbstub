@@ -8,7 +8,7 @@ use managed::ManagedSlice;
 use crate::common::*;
 use crate::{
     arch::{Arch, RegId, Registers},
-    connection::Connection,
+    connection::{Connection, ConnectionAsync, PollReadable},
     internal::*,
     protocol::{
         commands::{ext, Command},
@@ -925,9 +925,9 @@ impl<T: Target, C: Connection> GdbStubImpl<T, C> {
     ) -> Result<Option<DisconnectReason>, Error<T::Error, C::Error>> {
         #[pin_project::pin_project]
         struct GdbInterruptAdapter<'a, C: Connection> {
-            ready_but_no_interrupt: bool,
-            conn: &'a mut C,
-            err: Option<C::Error>,
+            ready_but_no_interrupt: &'a mut bool,
+            conn: &'a dyn ConnectionAsync<Error = C::Error>,
+            err: &'a mut Option<C::Error>,
         }
 
         use core::future::Future;
@@ -938,7 +938,7 @@ impl<T: Target, C: Connection> GdbStubImpl<T, C> {
             type Output = ();
 
             fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                if self.ready_but_no_interrupt {
+                if *self.ready_but_no_interrupt {
                     return Poll::Pending;
                 }
 
@@ -948,7 +948,7 @@ impl<T: Target, C: Connection> GdbStubImpl<T, C> {
                     Poll::Ready(Err(e)) => {
                         // instead of pushing the burden of handing connection errors into the
                         // resume() code, the error is stashed away until resume() yields execution.
-                        *this.err = Some(e);
+                        **this.err = Some(e);
                         Poll::Ready(())
                     }
                     Poll::Pending => Poll::Pending,
@@ -956,56 +956,120 @@ impl<T: Target, C: Connection> GdbStubImpl<T, C> {
             }
         }
 
+        ////////////////////////////////////////////////////////////////////////
+
         #[cfg(all(feature = "std", target_family = "unix"))]
         let fd = res.as_conn().as_raw_fd();
 
-        let mut adapter = GdbInterruptAdapter {
-            ready_but_no_interrupt: false,
-            conn: res.as_conn(),
-            err: None,
-        };
-
         let stop_reason = loop {
-            let gdb_interrupt_future = &mut adapter;
-            pin_utils::pin_mut!(gdb_interrupt_future);
+            let mut err = None;
+            let ready_but_no_interrupt = &mut false;
 
             #[allow(unused_mut)]
-            let mut gdb_interrupt = GdbInterrupt::new(gdb_interrupt_future);
+            match res.as_conn().async_interface() {
+                PollReadable::NonBlocking(conn) => {
+                    let mut fun = || -> bool {
+                        if *ready_but_no_interrupt {
+                            return true;
+                        }
 
-            #[cfg(all(feature = "std", target_family = "unix"))]
-            gdb_interrupt.set_fd(fd);
+                        match conn.is_readable() {
+                            Ok(v) => v,
+                            Err(e) => {
+                                err = Some(e);
+                                true
+                            }
+                        }
+                    };
+                    let mut gdb_interrupt = GdbInterrupt::new_pollable(&mut fun);
 
-            let stop_reason = match target.base_ops() {
-                BaseOps::SingleThread(ops) => ops
-                    .resume(
-                        // TODO?: add a more descriptive error if vcont has multiple threads in
-                        // single-threaded mode?
-                        actions.next().ok_or(Error::PacketUnexpected)?.1,
-                        gdb_interrupt,
-                    )
-                    .map(Into::into),
-                BaseOps::MultiThread(ops) => ops.resume(Actions::new(actions), gdb_interrupt),
-            }
-            .map_err(Error::TargetError)?;
+                    #[cfg(all(feature = "std", target_family = "unix"))]
+                    gdb_interrupt.set_fd(fd);
 
-            if matches!(stop_reason, ThreadStopReason::GdbInterrupt) {
-                if let Some(e) = adapter.err {
-                    return Err(Error::ConnectionRead(e));
-                }
-
-                match adapter.conn.peek() {
-                    // 0x03 is the interrupt byte
-                    Ok(0x03) => {}
-                    // anything else can wait.
-                    Ok(_) => {
-                        adapter.ready_but_no_interrupt = true;
-                        continue;
+                    let stop_reason = match target.base_ops() {
+                        BaseOps::SingleThread(ops) => ops
+                            .resume(
+                                // TODO?: add a more descriptive error if vcont has multiple
+                                // threads in single-threaded mode?
+                                actions.next().ok_or(Error::PacketUnexpected)?.1,
+                                gdb_interrupt,
+                            )
+                            .map(Into::into),
+                        BaseOps::MultiThread(ops) => {
+                            ops.resume(Actions::new(actions), gdb_interrupt)
+                        }
                     }
-                    Err(e) => return Err(Error::ConnectionRead(e)),
-                }
-            }
+                    .map_err(Error::TargetError)?;
 
-            break stop_reason;
+                    if matches!(stop_reason, ThreadStopReason::GdbInterrupt) {
+                        if let Some(e) = err {
+                            return Err(Error::ConnectionRead(e));
+                        }
+
+                        match conn.peek() {
+                            // 0x03 is the interrupt byte
+                            Ok(0x03) => {}
+                            // anything else can wait.
+                            Ok(_) => {
+                                *ready_but_no_interrupt = true;
+                                continue;
+                            }
+                            Err(e) => return Err(Error::ConnectionRead(e)),
+                        }
+                    }
+
+                    break stop_reason;
+                }
+                PollReadable::Async(conn) => {
+                    let mut adapter = GdbInterruptAdapter::<C> {
+                        ready_but_no_interrupt,
+                        conn,
+                        err: &mut err,
+                    };
+
+                    let gdb_interrupt_future = &mut adapter;
+                    pin_utils::pin_mut!(gdb_interrupt_future);
+
+                    let mut gdb_interrupt = GdbInterrupt::new_future(gdb_interrupt_future);
+
+                    #[cfg(all(feature = "std", target_family = "unix"))]
+                    gdb_interrupt.set_fd(fd);
+
+                    let stop_reason = match target.base_ops() {
+                        BaseOps::SingleThread(ops) => ops
+                            .resume(
+                                // TODO?: add a more descriptive error if vcont has multiple
+                                // threads in single-threaded mode?
+                                actions.next().ok_or(Error::PacketUnexpected)?.1,
+                                gdb_interrupt,
+                            )
+                            .map(Into::into),
+                        BaseOps::MultiThread(ops) => {
+                            ops.resume(Actions::new(actions), gdb_interrupt)
+                        }
+                    }
+                    .map_err(Error::TargetError)?;
+
+                    if matches!(stop_reason, ThreadStopReason::GdbInterrupt) {
+                        if let Some(e) = err {
+                            return Err(Error::ConnectionRead(e));
+                        }
+
+                        match conn.peek() {
+                            // 0x03 is the interrupt byte
+                            Ok(0x03) => {}
+                            // anything else can wait.
+                            Ok(_) => {
+                                *ready_but_no_interrupt = true;
+                                continue;
+                            }
+                            Err(e) => return Err(Error::ConnectionRead(e)),
+                        }
+                    }
+
+                    break stop_reason;
+                }
+            };
         };
 
         self.finish_vcont(stop_reason, res)

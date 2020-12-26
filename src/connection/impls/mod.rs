@@ -1,8 +1,6 @@
 //! Implementations of the [`Connection`] trait for various built-in types
 // TODO: impl Connection for all `Read + Write` (blocked on specialization)
 
-use core::task::{Context, Poll};
-
 #[cfg(feature = "alloc")]
 mod boxed;
 
@@ -12,7 +10,7 @@ mod tcpstream;
 #[cfg(all(feature = "std", unix))]
 mod unixstream;
 
-use super::Connection;
+use super::{Connection, PollReadable};
 
 impl<E> Connection for &mut dyn Connection<Error = E> {
     type Error = E;
@@ -45,7 +43,7 @@ impl<E> Connection for &mut dyn Connection<Error = E> {
         (**self).on_session_start()
     }
 
-    fn poll_readable(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        (**self).poll_readable(cx)
+    fn async_interface(&mut self) -> PollReadable<'_, Self::Error> {
+        (**self).async_interface()
     }
 }

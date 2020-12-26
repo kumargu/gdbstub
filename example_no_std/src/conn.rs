@@ -1,3 +1,4 @@
+use gdbstub::connection::{ConnectionNonBlocking, PollReadable};
 use gdbstub::Connection;
 
 pub struct TcpConnection {
@@ -97,11 +98,13 @@ impl Connection for TcpConnection {
         Ok(())
     }
 
-    fn poll_readable(
-        &self,
-        _: &mut core::task::Context<'_>,
-    ) -> core::task::Poll<Result<(), &'static str>> {
-        // HACK: this needs a proper implementation
-        core::task::Poll::Pending
+    fn async_interface(&mut self) -> PollReadable<'_, Self::Error> {
+        PollReadable::NonBlocking(self)
+    }
+}
+
+impl ConnectionNonBlocking for TcpConnection {
+    fn is_readable(&self) -> Result<bool, Self::Error> {
+        Ok(false) // HACK: this should have a proper impl
     }
 }

@@ -1,10 +1,13 @@
 use core::ffi::c_void;
-use core::task::{Context, Poll};
+
 use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 
-use crate::Connection;
+use crate::{
+    connection::{ConnectionNonBlocking, PollReadable},
+    Connection,
+};
 
 // TODO: Remove PeekExt once `gdbstub`'s MSRV >1.48 (rust-lang/rust#73761)
 trait PeekExt {
@@ -97,22 +100,28 @@ impl Connection for UnixStream {
         Ok(())
     }
 
-    fn poll_readable(&self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn async_interface(&mut self) -> PollReadable<'_, Self::Error> {
+        PollReadable::NonBlocking(self)
+    }
+
+    fn as_raw_fd(&self) -> Option<RawFd> {
+        Some(AsRawFd::as_raw_fd(self))
+    }
+}
+
+impl ConnectionNonBlocking for UnixStream {
+    fn is_readable(&self) -> Result<bool, Self::Error> {
         self.set_nonblocking(true)?;
 
         let mut buf = [0u8];
         let res = match PeekExt::peek(self, &mut buf) {
-            Ok(_) => Poll::Ready(Ok(())),
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Poll::Pending,
-            Err(e) => Poll::Ready(Err(e)),
+            Ok(_) => Ok(true),
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
+            Err(e) => Err(e),
         };
 
         self.set_nonblocking(false)?;
 
         res
-    }
-
-    fn as_raw_fd(&self) -> Option<RawFd> {
-        Some(AsRawFd::as_raw_fd(self))
     }
 }
