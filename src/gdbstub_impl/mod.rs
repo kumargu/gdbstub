@@ -932,7 +932,7 @@ impl<T: Target, C: Connection> GdbStubImpl<T, C> {
             #[pin]
             fut: F,
             err: &'a mut Option<E>,
-        };
+        }
 
         impl<'a, E, F: Future<Output = Result<(), E>>> DelayedErr<'a, E, F> {
             fn new(fut: F, err: &'a mut Option<E>) -> DelayedErr<'_, E, F> {

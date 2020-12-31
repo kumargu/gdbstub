@@ -4,7 +4,7 @@ use gdbstub::arch;
 use gdbstub::common::Tid;
 use gdbstub::target;
 use gdbstub::target::ext::base::multithread::{
-    Actions, MultiThreadOps, ResumeAction, ThreadStopReason,
+    Actions, GdbInterrupt, MultiThreadOps, ResumeAction, ThreadStopReason,
 };
 use gdbstub::target::ext::breakpoints::WatchKind;
 use gdbstub::target::{Target, TargetError, TargetResult};
@@ -65,8 +65,9 @@ impl MultiThreadOps for Emu {
     fn resume(
         &mut self,
         actions: Actions,
-        check_gdb_interrupt: &mut dyn FnMut() -> bool,
+        gdb_interrupt: GdbInterrupt,
     ) -> Result<ThreadStopReason<u32>, Self::Error> {
+        let mut gdb_interrupt = gdb_interrupt.manual_poll();
         // in this emulator, each core runs in lock-step, so we can ignore the
         // TidSelector associated with each action, and only care if GDB
         // requests execution to start / stop.
@@ -89,7 +90,7 @@ impl MultiThreadOps for Emu {
                 let mut cycles: usize = 0;
                 loop {
                     // check for GDB interrupt every 1024 instructions
-                    if cycles % 1024 == 0 && check_gdb_interrupt() {
+                    if cycles % 1024 == 0 && gdb_interrupt.pending() {
                         return Ok(ThreadStopReason::GdbInterrupt);
                     }
                     cycles += 1;
