@@ -15,7 +15,7 @@ pub enum Msp430<RegIdImpl: RegId> {
 }
 
 impl<RegIdImpl: RegId> Arch for Msp430<RegIdImpl> {
-    type Usize = u32;
+    type Usize = u16;
     type Registers = reg::Msp430Regs;
     type RegId = RegIdImpl;
     type BreakpointKind = usize;
